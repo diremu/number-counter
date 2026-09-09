@@ -1,3 +1,4 @@
+import base64
 import csv
 import os
 import secrets
@@ -6,59 +7,86 @@ from pathlib import Path
 
 import requests
 
-BASE_URL = "https://api.monnify.com/"
-
+ENV_FILE = Path(".env")
 INPUT_FILE = Path("accounts.csv")
 OUTPUT_FILE = Path("results.csv")
 
 REQUEST_DELAY = 1.0
 MAX_RETRIES = 3
 TIMEOUT = 20
+BANK_CODE = "999992"
+
+
+def load_environment():
+
+    if not ENV_FILE.exists():
+        return
+
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+
+        line = line.strip()
+
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        name, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(name.strip(), value)
+
+
+load_environment()
+
+BASE_URL = os.environ.get(
+    "MONNIFY_BASE_URL",
+    "https://api.monnify.com",
+).rstrip("/")
+
+NUMBER_COUNT = int(os.environ.get("NUMBER_COUNT", "100"))
 
 MOBILE_PREFIXES = [
-    "0701",
-    "0703",
-    "0704",
-    "0705",
-    "0706",
-    "0707",
-    "0708",
+    "701",
+    "703",
+    "704",
+    "705",
+    "706",
+    "707",
+    "708",
 
-    "0802",
-    "0803",
-    "0804",
-    "0805",
-    "0806",
-    "0807",
-    "0808",
-    "0809",
+    "802",
+    "803",
+    "804",
+    "805",
+    "806",
+    "807",
+    "808",
+    "809",
 
-    "0810",
-    "0811",
-    "0812",
-    "0813",
-    "0814",
-    "0815",
-    "0816",
-    "0817",
-    "0818",
-    "0819",
+    "810",
+    "811",
+    "812",
+    "813",
+    "814",
+    "815",
+    "816",
+    "817",
+    "818",
+    "819",
 
-    "0901",
-    "0902",
-    "0903",
-    "0904",
-    "0905",
-    "0906",
-    "0907",
-    "0908",
-    "0909",
+    "901",
+    "902",
+    "903",
+    "904",
+    "905",
+    "906",
+    "907",
+    "908",
+    "909",
 
-    "0911",
-    "0912",
-    "0913",
-    "0915",
-    "0916",
+    "911",
+    "912",
+    "913",
+    "915",
+    "916",
 ]
 
 
@@ -71,7 +99,7 @@ def generate_mobile_numbers(count):
 
     while len(numbers) < count:
 
-        prefix = secrets.choice(MOBILE_PREFIXES)
+        prefix = "0" + secrets.choice(MOBILE_PREFIXES)
         suffix = "".join(
             secrets.choice("0123456789")
             for _ in range(7)
@@ -112,16 +140,34 @@ class MonnifyClient:
 
         print("Authenticating with Monnify...")
 
+        credentials = f"{self.api_key}:{self.secret_key}".encode(
+            "utf-8"
+        )
+        encoded_credentials = base64.b64encode(
+            credentials
+        ).decode("ascii")
+
         response = self.session.post(
             f"{BASE_URL}/api/v1/auth/login",
-            auth=(
-                self.api_key,
-                self.secret_key,
-            ),
+            headers={
+                "Authorization": (
+                    f"Basic {encoded_credentials}"
+                )
+            },
             timeout=TIMEOUT,
         )
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = response.text.strip()
+            raise RuntimeError(
+                "Monnify authentication failed with HTTP "
+                f"{response.status_code}. Check that the API key and "
+                "secret key are active and that MONNIFY_BASE_URL "
+                f"({BASE_URL}) matches their environment. "
+                f"Response: {detail}"
+            ) from exc
 
         data = response.json()
 
@@ -412,34 +458,15 @@ def main():
 
     processed = load_processed()
 
-    accounts = list(
-        load_accounts()
-    )
-
     print(
-        f"Accounts loaded: {len(accounts)}"
+        f"Numbers to generate: {NUMBER_COUNT}"
     )
 
     print(
         f"Already processed: {len(processed)}"
     )
 
-    remaining = [
-        item
-        for item in accounts
-        if item not in processed
-    ]
-
-    print(
-        f"Remaining: {len(remaining)}"
-    )
-
     print()
-
-    if not remaining:
-
-        print("Nothing left to process.")
-        return
 
     validated = 0
     failed = 0
@@ -449,17 +476,23 @@ def main():
     # Process accounts
     # --------------------------------------------------------
 
-    for index, (
-        account_number,
-        bank_code,
-    ) in enumerate(
-        remaining,
+    for index, account_number in enumerate(
+        generate_mobile_numbers(NUMBER_COUNT),
         start=1,
     ):
 
+        bank_code = BANK_CODE
+
+        if (account_number, bank_code) in processed:
+            print(
+                f"[{index}/{NUMBER_COUNT}] Already processed: "
+                f"{account_number}"
+            )
+            continue
+
         print(
-            f"[{index}/{len(remaining)}] "
-            f"Validating account..."
+            f"[{index}/{NUMBER_COUNT}] "
+            f"Validating {account_number}..."
         )
 
         result = client.validate_account(
